@@ -12,18 +12,31 @@ $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer
 if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Windows installer preparation requires Visual Studio C++ Build Tools and a Windows SDK.' }
 $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $visualStudio) { throw 'Visual Studio C++ Build Tools are missing.' }
-$vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvars32.bat'
+$vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+if (-not (Test-Path -LiteralPath $vcvars)) { throw 'Visual Studio vcvarsall.bat is missing.' }
 $compileScript = Join-Path $output 'compile-frame.cmd'
-$compileLines = @('@echo off', ('call "{0}" >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /LD /MT /O1 /W4 /WX /EHsc "{0}" /Fo"{1}" /link /OUT:"{2}" /IMPLIB:"{3}" user32.lib comctl32.lib dwmapi.lib gdiplus.lib ole32.lib shell32.lib uuid.lib advapi32.lib' -f $source, (Join-Path $output 'window-frame.obj'), $library, (Join-Path $output 'window-frame.lib')))
-[IO.File]::WriteAllLines($compileScript, $compileLines, [Text.Encoding]::Default)
-& $env:ComSpec /d /c $compileScript
-if ($LASTEXITCODE -ne 0) { throw 'Native installer helper compilation failed.' }
+$clFlags = '/nologo /LD /MT /O1 /W4 /WX /EHsc'
+$compileLines = @(
+    '@echo off',
+    ('call "{0}" x86 >nul' -f $vcvars),
+    'if errorlevel 1 exit /b %errorlevel%',
+    ('cl {0} "{1}" /Fo"{2}" /link /OUT:"{3}" /IMPLIB:"{4}" user32.lib comctl32.lib dwmapi.lib gdiplus.lib ole32.lib shell32.lib uuid.lib advapi32.lib' -f $clFlags, $source, (Join-Path $output 'window-frame.obj'), $library, (Join-Path $output 'window-frame.lib'))
+)
+[IO.File]::WriteAllLines($compileScript, $compileLines, [Text.Encoding]::ASCII)
+# MSVC 14.51 Hostx86 can intermittently ICE or misparse SDK headers; retry the same command.
+$compiled = $false
+foreach ($attempt in 1..8) {
+    & $env:ComSpec /d /c $compileScript
+    if ($LASTEXITCODE -eq 0) { $compiled = $true; break }
+    Start-Sleep -Milliseconds (200 * $attempt)
+}
+if (-not $compiled) { throw 'Native installer helper compilation failed.' }
 if ($TestProgress -or $CompileProgressOnly) {
     $cleanupSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../tests/windows-uninstall-data.cpp'))
     # UAC installer detection demands elevation from unmanifested executables named after installation.
     $cleanupExecutable = Join-Path $output 'data-cleanup-test.exe'
     $cleanupScript = Join-Path $output 'compile-data-cleanup-test.cmd'
-    [IO.File]::WriteAllLines($cleanupScript, @('@echo off', ('call "{0}" >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}" /link shell32.lib ole32.lib uuid.lib advapi32.lib' -f $cleanupSource, (Join-Path $output 'data-cleanup-test.obj'), $cleanupExecutable)), [Text.Encoding]::Default)
+    [IO.File]::WriteAllLines($cleanupScript, @('@echo off', ('call "{0}" x86 >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}" /link shell32.lib ole32.lib uuid.lib advapi32.lib' -f $cleanupSource, (Join-Path $output 'data-cleanup-test.obj'), $cleanupExecutable)), [Text.Encoding]::ASCII)
     & $env:ComSpec /d /c $cleanupScript
     if ($LASTEXITCODE -ne 0) { throw 'Uninstall data test compilation failed.' }
     if ($TestProgress) {
@@ -33,7 +46,7 @@ if ($TestProgress -or $CompileProgressOnly) {
     $testSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../tests/windows-installer-progress.cpp'))
     $testExecutable = Join-Path $output 'progress-test.exe'
     $testScript = Join-Path $output 'compile-progress-test.cmd'
-    [IO.File]::WriteAllLines($testScript, @('@echo off', ('call "{0}" >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}"' -f $testSource, (Join-Path $output 'progress-test.obj'), $testExecutable)), [Text.Encoding]::Default)
+    [IO.File]::WriteAllLines($testScript, @('@echo off', ('call "{0}" x86 >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}"' -f $testSource, (Join-Path $output 'progress-test.obj'), $testExecutable)), [Text.Encoding]::ASCII)
     & $env:ComSpec /d /c $testScript
     if ($LASTEXITCODE -ne 0) { throw 'Progress test compilation failed.' }
     if ($TestProgress) {
@@ -43,7 +56,7 @@ if ($TestProgress -or $CompileProgressOnly) {
     $presentationSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../tests/windows-installer-presentation.cpp'))
     $presentationExecutable = Join-Path $output 'presentation-test.exe'
     $presentationScript = Join-Path $output 'compile-presentation-test.cmd'
-    [IO.File]::WriteAllLines($presentationScript, @('@echo off', ('call "{0}" >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}" /link "{3}" user32.lib' -f $presentationSource, (Join-Path $output 'presentation-test.obj'), $presentationExecutable, (Join-Path $output 'window-frame.lib'))), [Text.Encoding]::Default)
+    [IO.File]::WriteAllLines($presentationScript, @('@echo off', ('call "{0}" x86 >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}" /link "{3}" user32.lib' -f $presentationSource, (Join-Path $output 'presentation-test.obj'), $presentationExecutable, (Join-Path $output 'window-frame.lib'))), [Text.Encoding]::ASCII)
     & $env:ComSpec /d /c $presentationScript
     if ($LASTEXITCODE -ne 0) { throw 'Installer presentation test compilation failed.' }
     if ($TestProgress) {
@@ -53,7 +66,7 @@ if ($TestProgress -or $CompileProgressOnly) {
     $reportSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../tests/windows-installer-extract-report.cpp'))
     $reportExecutable = Join-Path $output 'extract-report-test.exe'
     $reportScript = Join-Path $output 'compile-extract-report-test.cmd'
-    [IO.File]::WriteAllLines($reportScript, @('@echo off', ('call "{0}" >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}" /link "{3}" user32.lib shell32.lib' -f $reportSource, (Join-Path $output 'extract-report-test.obj'), $reportExecutable, (Join-Path $output 'window-frame.lib'))), [Text.Encoding]::Default)
+    [IO.File]::WriteAllLines($reportScript, @('@echo off', ('call "{0}" x86 >nul' -f $vcvars), 'if errorlevel 1 exit /b %errorlevel%', ('cl /nologo /MT /W4 /WX /EHsc "{0}" /Fo"{1}" /Fe"{2}" /link "{3}" user32.lib shell32.lib' -f $reportSource, (Join-Path $output 'extract-report-test.obj'), $reportExecutable, (Join-Path $output 'window-frame.lib'))), [Text.Encoding]::ASCII)
     & $env:ComSpec /d /c $reportScript
     if ($LASTEXITCODE -ne 0) { throw 'Extraction report test compilation failed.' }
     if ($TestProgress) {
